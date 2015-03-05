@@ -1,0 +1,14 @@
+Source: memps
+Section: devel
+Priority: optional 
+Maintainer: Hyunhee Kim <hyunhee.kim@samsung.com>
+Uploaders: Hyunhee Kim <hyunhee.kim@samsung.com>
+Build-Depends: debhelper (>= 5)
+Standards-Version: 3.7.2
+
+Package: memps-0
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: memps - report a memory info of the current processes
+ memps displays information about current memory usage of processes, tmpfs and
+ Low Memory Notifier.
