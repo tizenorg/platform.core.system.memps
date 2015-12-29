@@ -195,6 +195,8 @@ static geminfo *read_geminfo(FILE *fp)
 			&hcount, &gem_size) != NUM_GEM_FIELD)
 			return NULL;
 
+		if (hcount == 0)
+			return NULL;
 		tgeminfo = malloc(sizeof(geminfo));
 		if (tgeminfo == NULL)
 			return NULL;
@@ -430,6 +432,12 @@ static void get_mem_info(FILE *output_fp)
 			swap_free = atoi(idx);
 			break;
 		}
+	}
+
+	if (total_mem == 0) {
+		fprintf(stderr, "cannot get total memory size\n");
+		fclose(fp);
+		return;
 	}
 
 	if (available == 0)
