@@ -34,10 +34,24 @@
 #define STR_3D_PATH2	"/dev/kgsl-3d0"
 #define STR_DRM_PATH1	"/drm mm object (deleted)"
 #define STR_DRM_PATH2	"/dev/dri/card0"
+#define MEMCG_PATH	"/sys/fs/cgroup/memory"
+#define ZRAM_USED_PATH	"/sys/block/zram0/mem_used_total"
 
 #define BUF_MAX         (BUFSIZ)            /* most optimal for libc::stdio */
 #define BUF_INC_SIZE    (512 * 1024)        /* maximal SMAPS I saw 2 MB     */
 #define KB(bytes)       ((bytes)/1024)
+
+#define BYTE_TO_KBYTE(b) ((b) >> 10)
+#define BYTE_TO_MBYTE(b) ((b) >> 20)
+#define BYTE_TO_GBYTE(b) ((b) >> 30)
+
+#define KBYTE_TO_BYTE(k) ((k) << 10)
+#define KBYTE_TO_MBYTE(k) ((k) >> 10)
+#define KBYTE_TO_GBYTE(k) ((k) >> 20)
+
+#define GBYTE_TO_BYTE(g) ((g) << 30)
+#define GBYTE_TO_KBYTE(g) ((g) << 20)
+#define GBYTE_TO_MBYTE(g) ((g) << 10)
 
 typedef struct geminfo geminfo;
 typedef struct mapinfo mapinfo;
@@ -54,6 +68,7 @@ struct mapinfo {
 	unsigned start;
 	unsigned end;
 	unsigned size;
+	unsigned swap;
 	unsigned rss;
 	unsigned pss;
 	unsigned shared_clean;
@@ -72,6 +87,7 @@ struct trib_mapinfo {
 	unsigned private_dirty;
 	unsigned shared_clean_pss;
 	unsigned shared_dirty_pss;
+	unsigned swap;
 	unsigned rss;
 	unsigned pss;
 	unsigned size;
@@ -340,6 +356,10 @@ mapinfo *read_mapinfo(char** smaps, int rest_line)
 		goto oops;
 
 	while (rest_line-- && (line = cgets(smaps))) {
+		if (sscanf(line, "Swap: %d kB", &tmp) == 1) {
+			mi->swap = tmp;
+			//rest_line++;
+		}
 		if (sscanf(line, "PSwap: %d kB", &tmp) == 1)
 			rest_line++;
 	}
@@ -379,6 +399,130 @@ static unsigned total_gem_memory(void)
 	return total_gem_mem;
 }
 
+
+int fread_uint(const char *path, u_int32_t *number)
+{
+	FILE *f = NULL;
+	int ret;
+
+	f = fopen(path, "r");
+
+	if(!f) {
+		fprintf(stderr,"Fail to open %s file.\n", path);
+		return -1;
+	}
+
+	ret = fscanf(f, "%u", number);
+	if(ret == EOF) {
+		fprintf(stderr,"Fail to read file\n");
+		fclose(f);
+		return -1;
+	}
+
+	fclose(f);
+	return 0;
+}
+
+#define MAX_PATH_LENGTH 512
+static int cgroup_read_node(const char *cgroup_name,
+		const char *file_name, unsigned int *value)
+{
+	char buf[MAX_PATH_LENGTH];
+	int ret;
+	snprintf(buf, sizeof(buf), "%s%s", cgroup_name, file_name);
+	ret = fread_uint(buf, value);
+	// _SD("cgroup_buf %s, value %d\n", buf, *value);
+	return ret;
+}
+
+/**
+ * @desc Provides usage in bytes for provided memory cgroup. Works
+ * with/without swap accounting.
+ *
+ * @param memcg_path[in] Full path to memory cgroup
+ * @param swap[in] Boolean value for deciding if account usage with swap
+ * @return current cgroup usage in bytes or 0 on error
+ */
+static unsigned int get_memcg_usage(const char *memcg_path, int swap)
+{
+	int ret;
+	unsigned int usage;
+
+	if (swap) {
+		ret = cgroup_read_node(memcg_path,
+				"/memory.memsw.usage_in_bytes", &usage);
+	} else {
+		ret = cgroup_read_node(memcg_path, "/memory.usage_in_bytes",
+				&usage);
+	}
+
+	if (ret != 0)
+		usage = 0;
+
+	return usage;
+}
+
+static void get_memcg_info(FILE *output_fp)
+{
+	char buf[PATH_MAX];
+	DIR *pdir = NULL;
+	struct dirent entry;
+	struct dirent *result;
+	struct stat path_stat;
+	long usage_swap;
+	unsigned long usage, usage_with_swap;
+	int ret;
+
+	fprintf(output_fp,"====================================================================\n");
+	fprintf(output_fp,"MEMORY CGROUPS USAGE INFO\n");
+
+	pdir = opendir(MEMCG_PATH);
+	if (pdir == NULL) {
+		fprintf(stderr,"cannot read directory %s", MEMCG_PATH);
+		return;
+	}
+
+	while (!(ret = readdir_r(pdir, &entry, &result)) && result != NULL) {
+		snprintf(buf, sizeof(buf), "%s/%s", MEMCG_PATH, entry.d_name);
+		/* If can't stat then ignore */
+		if (stat(buf, &path_stat) != 0)
+			continue;
+
+		/* If it's not directory or it's parent path then ignore */
+		if (!(S_ISDIR(path_stat.st_mode) &&
+			strncmp(entry.d_name, "..", 3)))
+			continue;
+
+		usage = get_memcg_usage(buf, 0);  // false
+		usage_with_swap = get_memcg_usage(buf, 1);  // true
+		/* It is posible by rounding errors to get negative value */
+		usage_swap = usage_with_swap - usage;
+		if (usage_swap < 0)
+			usage_swap = 0;
+
+		/* Case of root cgroup in hierarchy */
+		if (!strncmp(entry.d_name, ".", 2))
+			fprintf(output_fp, "%13s Mem %3ld MB (%6ld kB), Mem+Swap %3ld MB (%6ld kB), Swap %3ld MB (%6ld kB) \n\n",
+				MEMCG_PATH, BYTE_TO_MBYTE(usage),
+				BYTE_TO_KBYTE(usage),
+				BYTE_TO_MBYTE(usage_with_swap),
+				BYTE_TO_KBYTE(usage_with_swap),
+				BYTE_TO_MBYTE(usage_swap),
+				BYTE_TO_KBYTE(usage_swap));
+		else
+			fprintf(output_fp, "memcg: %13s  Mem %3ld MB (%6ld kB), Mem+Swap %3ld MB (%6ld kB), Swap %3ld MB (%6ld kB)\n",
+				entry.d_name, BYTE_TO_MBYTE(usage),
+				BYTE_TO_KBYTE(usage),
+				BYTE_TO_MBYTE(usage_with_swap),
+				BYTE_TO_KBYTE(usage_with_swap),
+				BYTE_TO_MBYTE(usage_swap),
+				BYTE_TO_KBYTE(usage_swap));
+
+	}
+
+	closedir(pdir);
+}
+
 static void get_mem_info(FILE *output_fp)
 {
 	char buf[PATH_MAX];
@@ -386,7 +530,7 @@ static void get_mem_info(FILE *output_fp)
 	char *idx;
 	unsigned int free = 0, cached = 0;
 	unsigned int total_mem = 0, available = 0, used;
-	unsigned int swap_total = 0, swap_free = 0, swap_used;
+	unsigned int swap_total = 0, swap_free = 0, zram_used, swap_used;
 	unsigned int used_ratio;
 
 	if (output_fp == NULL)
@@ -446,6 +590,9 @@ static void get_mem_info(FILE *output_fp)
 	used_ratio = used * 100 / total_mem;
 	swap_used = swap_total - swap_free;
 
+	if (fread_uint(ZRAM_USED_PATH, &zram_used) != 0)
+		zram_used = 0;
+
 	fprintf(output_fp,
 		"====================================================================\n");
 
@@ -464,6 +611,9 @@ static void get_mem_info(FILE *output_fp)
 
 	fprintf(output_fp, "Used (Swap): \t\t%15d MB( %6d kB)\n",
 			swap_used >> 10, swap_used);
+
+	fprintf(output_fp, "Used (Zram block device): %13d MB( %6d kB)\n",
+	    BYTE_TO_MBYTE(zram_used), BYTE_TO_KBYTE(zram_used));
 
 	fprintf(output_fp, "Used Ratio: \t\t%15d  %%\n", used_ratio);
 
@@ -527,6 +677,7 @@ mapinfo *load_maps(int pid)
 			if ((!strcmp(mi->name, milist->name)
 			     && (mi->name[0] != '['))) {
 				milist->size += mi->size;
+				milist->swap += mi->swap;
 				milist->rss += mi->rss;
 				milist->pss += mi->pss;
 				milist->shared_clean += mi->shared_clean;
@@ -571,6 +722,7 @@ static void init_trib_mapinfo(trib_mapinfo *tmi)
 	tmi->shared_dirty = 0;
 	tmi->private_clean = 0;
 	tmi->private_dirty = 0;
+	tmi->swap = 0;
 	tmi->shared_clean_pss = 0;
 	tmi->shared_dirty_pss = 0;
 	tmi->rss = 0;
@@ -607,7 +759,8 @@ get_trib_mapinfo(unsigned int tgid, mapinfo *milist,
 			   && mi->shared_clean == 0
 			   && mi->shared_dirty == 0
 			   && mi->private_clean == 0
-			   && mi->private_dirty == 0) {
+			   && mi->private_dirty == 0
+			   && mi->swap == 0) {
 			result->other_devices += mi->size;
 		} else if (!strncmp(mi->name, STR_DRM_PATH1,
 				sizeof(STR_DRM_PATH1)) ||
@@ -619,6 +772,7 @@ get_trib_mapinfo(unsigned int tgid, mapinfo *milist,
 			result->shared_dirty += mi->shared_dirty;
 			result->private_clean += mi->private_clean;
 			result->private_dirty += mi->private_dirty;
+			result->swap += mi->swap;
 			result->rss += mi->rss;
 			result->pss += mi->pss;
 			result->size += mi->size;
@@ -796,6 +950,7 @@ static int show_map_all_new(int output_type, char *output_path)
 	unsigned total_shared_data = 0;
 	unsigned total_shared_code_pss = 0;
 	unsigned total_shared_data_pss = 0;
+	unsigned total_swap = 0;
 	unsigned total_rss = 0;
 	unsigned total_graphic_3d = 0;
 	unsigned total_gem_rss = 0;
@@ -831,12 +986,12 @@ static int show_map_all_new(int output_type, char *output_path)
 			fprintf(output_file,
 					"     PID  S(CODE)  S(DATA)  P(CODE)  P(DATA)"
 					"     PEAK      PSS       3D"
-					"     GEM(PSS)  GEM(RSS)"
-					" OOM_SCORE_ADJ    COMMAND\n");
+					"     GEM(PSS)  GEM(RSS)    SWAP"
+					"     OOM_SCORE_ADJ    COMMAND\n");
 		else
 			fprintf(output_file,
 					"     PID     CODE     DATA     PEAK     PSS"
-					"     3D      GEM(PSS)      COMMAND\n");
+					"     3D      GEM(PSS)      SWAP      COMMAND\n");
 	}
 
 	while ((curdir = readdir(pDir)) != NULL) {
@@ -858,16 +1013,17 @@ static int show_map_all_new(int output_type, char *output_path)
 		if (!sum) {
 			if (verbos)
 				fprintf(output_file,
-					"%8d %8d %8d %8d %8d %8d %8d %8d %8d %8d"
+					"%8d %8d %8d %8d %8d %8d %8d %8d %8d %8d %8d"
 					" %8d \t\t%s\n",
 					pid,
 					tmi.shared_clean, tmi.shared_dirty,
 					tmi.private_clean, tmi.private_dirty,
 					tmi.peak_rss, tmi.pss, tmi.graphic_3d,
-					tmi.gem_pss, tmi.gem_rss, oom_score_adj, cmdline);
+					tmi.gem_pss, tmi.gem_rss, tmi.swap,
+					oom_score_adj, cmdline);
 			else
 				fprintf(output_file,
-					"%8d %8d %8d %8d %8d %8d %8d      %s\n",
+					"%8d %8d %8d %8d %8d %8d %8d %8d      %s\n",
 					pid,
 					tmi.shared_clean +
 					tmi.private_clean,
@@ -875,7 +1031,8 @@ static int show_map_all_new(int output_type, char *output_path)
 					tmi.peak_rss,
 					tmi.pss,
 					tmi.graphic_3d,
-					tmi.gem_pss, cmdline);
+					tmi.gem_pss,
+					tmi.swap, cmdline);
 
 			if (tmi.other_devices != 0)
 				fprintf(output_file,
@@ -891,12 +1048,14 @@ static int show_map_all_new(int output_type, char *output_path)
 		total_gem_pss += tmi.gem_pss;
 		total_private_code += tmi.private_clean;
 		total_private_data += tmi.private_dirty;
+		total_swap += tmi.swap;
 		total_shared_code += tmi.shared_clean;
 		total_shared_data += tmi.shared_dirty;
 		total_peak_rss += tmi.peak_rss;
 
 		total_shared_code_pss += tmi.shared_clean_pss;
 		total_shared_data_pss += tmi.shared_dirty_pss;
+
 	} /* end of while */
 
 	total_allocated_gem = KB(total_gem_memory());
@@ -907,27 +1066,27 @@ static int show_map_all_new(int output_type, char *output_path)
 		fprintf(output_file,
 				"TOTAL:      S(CODE) S(DATA) P(CODE)  P(DATA)"
 				"    PEAK     PSS       3D    "
-				"GEM(PSS) GEM(RSS) GEM(ALLOC) TOTAL(KB)\n");
+				"GEM(PSS) GEM(RSS) GEM(ALLOC) SWAP TOTAL(KB)\n");
 		fprintf(output_file,
 			"         %8d %8d %8d %8d %8d %8d %8d"
-			" %8d %8d %8d %8d\n",
+			" %8d %8d %8d %8d %8d\n",
 			total_shared_code, total_shared_data,
 			total_private_code, total_private_data,
 			total_peak_rss,	total_pss, total_graphic_3d,
 			total_gem_pss, total_gem_rss,
-			total_allocated_gem,
+			total_allocated_gem, total_swap,
 			total_pss + total_graphic_3d +
 			total_allocated_gem);
 	} else {
 		fprintf(output_file,
 			"TOTAL:        CODE     DATA    PEAK     PSS     "
 			"3D    GEM(PSS) GEM(ALLOC)     TOTAL(KB)\n");
-		fprintf(output_file, "         %8d %8d %8d %8d %8d %8d %7d %8d\n",
+		fprintf(output_file, "         %8d %8d %8d %8d %8d %8d %7d %8d %8d\n",
 			total_shared_code + total_private_code,
 			total_shared_data + total_private_data,
 			total_peak_rss, total_pss,
 			total_graphic_3d, total_gem_pss,
-			total_allocated_gem,
+			total_allocated_gem, total_swap,
 			total_pss + total_graphic_3d +
 			total_allocated_gem);
 
@@ -961,6 +1120,7 @@ static int show_map_all_new(int output_type, char *output_path)
 			"* TOTAL: PSS + 3D + GEM(ALLOC)\n");
 
 	get_tmpfs_info(output_file);
+	get_memcg_info(output_file);
 	get_mem_info(output_file);
 
 	fclose(output_file);
