@@ -182,7 +182,7 @@ static unsigned get_peak_rss(unsigned int pid)
 	char* line;
 	char* value;
 
-	sprintf(tmp, "/proc/%d/status", pid);
+	snprintf(tmp, sizeof(tmp), "/proc/%d/status", pid);
 	line = cread(tmp);
 	if (line == NULL) {
 		fprintf(stderr,	"cannot open %s\n", tmp);
@@ -324,9 +324,9 @@ mapinfo *read_mapinfo(char** smaps, int rest_line)
 	mi->perm[3] = line[21];	/* may share or private */
 
 	if (len < 50)
-		strcpy(mi->name, "[anon]");
+		strncpy(mi->name, "[anon]", strlen("[anon]"));
 	else
-		strcpy(mi->name, line + 49);
+		strncpy(mi->name, line + 49, len);
 
 	if ((line = cgets(smaps)) == 0)
 		goto oops;
@@ -667,7 +667,7 @@ mapinfo *load_maps(int pid)
 	mapinfo *milist = 0;
 	mapinfo *mi;
 
-	sprintf(tmp, "/proc/%d/smaps", pid);
+	snprintf(tmp, sizeof(tmp), "/proc/%d/smaps", pid);
 	smaps = cread(tmp);
 	if (smaps == NULL)
 		return 0;
@@ -810,13 +810,13 @@ static int get_cmdline(unsigned int pid, char *cmdline)
 	char buf[NAME_MAX] = {0, };
 	int ret = -1;
 
-	sprintf(buf, "/proc/%d/cmdline", pid);
+	snprintf(buf, sizeof(buf), "/proc/%d/cmdline", pid);
 	fp = fopen(buf, "r");
 	if (fp == 0) {
 		fprintf(stderr, "cannot file open %s\n", buf);
 		return ret;
 	}
-	if ((ret = fscanf(fp, "%s", cmdline)) < 1) {
+	if ((ret = fscanf(fp, "%4095s", cmdline)) < 1) {
 		fclose(fp);
 		return ret;
 	}
@@ -831,7 +831,7 @@ static int get_oomscoreadj(unsigned int pid)
 	char tmp[256];
 	int oomadj_val;
 
-	sprintf(tmp, "/proc/%d/oom_score_adj", pid);
+	snprintf(tmp, sizeof(tmp), "/proc/%d/oom_score_adj", pid);
 	fp = fopen(tmp, "r");
 
 	if (fp == NULL) {
@@ -858,7 +858,7 @@ static void get_rss(pid_t pid, unsigned int *result)
 
 	*result = 0;
 
-	sprintf(proc_path, "/proc/%d/statm", pid);
+	snprintf(proc_path, sizeof(proc_path), "/proc/%d/statm", pid);
 	fp = fopen(proc_path, "r");
 	if (fp == NULL)
 		return;
@@ -878,12 +878,14 @@ static void get_rss(pid_t pid, unsigned int *result)
 static void show_rss(int output_type, char *output_path)
 {
 	DIR *pDir = NULL;
-	struct dirent *curdir;
+	struct dirent curdir;
+	struct dirent *result;
 	pid_t pid;
 	char cmdline[PATH_MAX];
 	FILE *output_file = NULL;
 	int oom_score_adj;
 	unsigned int rss;
+	int ret;
 
 	pDir = opendir("/proc");
 	if (pDir == NULL) {
@@ -906,8 +908,8 @@ static void show_rss(int output_type, char *output_path)
 	fprintf(output_file,
 			"     PID    RSS    OOM_SCORE    COMMAND\n");
 
-	while ((curdir = readdir(pDir)) != NULL) {
-		pid = atoi(curdir->d_name);
+	while (!(ret = readdir_r(pDir, &curdir, &result)) && result != NULL) {
+		pid = atoi(curdir.d_name);
 		if (pid < 1 || pid > 32768 || pid == getpid())
 			continue;
 
@@ -938,7 +940,8 @@ static void show_rss(int output_type, char *output_path)
 static int show_map_all_new(int output_type, char *output_path)
 {
 	DIR *pDir = NULL;
-	struct dirent *curdir;
+	struct dirent curdir;
+	struct dirent *result;
 	unsigned int pid;
 	mapinfo *milist;
 	geminfo *glist;
@@ -961,6 +964,8 @@ static int show_map_all_new(int output_type, char *output_path)
 	char cmdline[PATH_MAX];
 	FILE *output_file = NULL;
 	int oom_score_adj;
+
+	int r;
 
 	pDir = opendir("/proc");
 	if (pDir == NULL) {
@@ -994,8 +999,8 @@ static int show_map_all_new(int output_type, char *output_path)
 					"     3D      GEM(PSS)      SWAP      COMMAND\n");
 	}
 
-	while ((curdir = readdir(pDir)) != NULL) {
-		pid = atoi(curdir->d_name);
+	while (!(r = readdir_r(pDir, &curdir, &result)) && result != NULL) {
+		pid = atoi(curdir.d_name);
 		if (pid < 1 || pid > 32768 || pid == getpid())
 			continue;
 
@@ -1248,27 +1253,27 @@ int main(int argc, char *argv[])
 	if (argc > 1) {
 		check_kernel_version();
 
-		if (!strcmp(argv[1], "-r")) {
+		if (!strncmp(argv[1], "-r", strlen("-r")+1)) {
 			if (argc >= 3)
 				show_rss(OUTPUT_FILE, argv[2]);
 			else
 				show_rss(OUTPUT_UART, NULL);
 			usage = 0;
-		} else if (!strcmp(argv[1], "-s")) {
+		} else if (!strncmp(argv[1], "-s", strlen("-s")+1)) {
 			sum = 1;
 			if (argc == 3 && atoi(argv[2]) > 0) {
 				show_map_new(atoi(argv[2]));
 				usage = 0;
 			}
-		} else if (!strcmp(argv[1], "-a")) {
+		} else if (!strncmp(argv[1], "-a", strlen("-a")+1)) {
 			verbos = 0;
 			show_map_all_new(OUTPUT_UART, NULL);
 			usage = 0;
-		} else if (!strcmp(argv[1], "-v")) {
+		} else if (!strncmp(argv[1], "-v", strlen("-v")+1)) {
 			verbos = 1;
 			show_map_all_new(OUTPUT_UART, NULL);
 			usage = 0;
-		} else if (!strcmp(argv[1], "-f")) {
+		} else if (!strncmp(argv[1], "-f", strlen("-f")+1)) {
 			if (argc >= 3) {
 				verbos = 1;
 				show_map_all_new(OUTPUT_FILE, argv[2]);
