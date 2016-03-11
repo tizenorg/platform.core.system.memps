@@ -228,10 +228,24 @@ static geminfo *read_geminfo(FILE *fp)
 }
 
 
+static geminfo *find_geminfo(unsigned int tgid, geminfo *gilist)
+{
+	geminfo *gi;
+	for (gi = gilist; gi; ) {
+		if (gi->tgid == tgid)
+			return gi;
+
+		gi = gi->next;
+	}
+	return NULL;
+}
+
 static geminfo *load_geminfo(void)
 {
 	geminfo *ginfo;
 	geminfo *gilist = NULL;
+	geminfo *exist_ginfo = NULL;
+
 	FILE *drm_fp;
 	char line[BUF_MAX];
 
@@ -279,6 +293,11 @@ static geminfo *load_geminfo(void)
 		if (gilist && ginfo->tgid == gilist->tgid) {
 			gilist->pss_size += ginfo->pss_size;
 			gilist->rss_size += ginfo->rss_size;
+			free(ginfo);
+			continue;
+		} else if(gilist && ((exist_ginfo = find_geminfo(ginfo->tgid, gilist)) != NULL)) {
+			exist_ginfo->pss_size += ginfo->pss_size;
+			exist_ginfo->rss_size += ginfo->rss_size;
 			free(ginfo);
 			continue;
 		}
@@ -700,18 +719,6 @@ mapinfo *load_maps(int pid)
 	}
 
 	return milist;
-}
-
-static geminfo *find_geminfo(unsigned int tgid, geminfo *gilist)
-{
-	geminfo *gi;
-	for (gi = gilist; gi; ) {
-		if (gi->tgid == tgid)
-			return gi;
-
-		gi = gi->next;
-	}
-	return NULL;
 }
 
 static void init_trib_mapinfo(trib_mapinfo *tmi)
