@@ -345,7 +345,7 @@ mapinfo *read_mapinfo(char** smaps, int rest_line)
 	mi->perm[3] = line[21];	/* may share or private */
 
 	if (len < 50)
-		strncpy(mi->name, "[anon]", strlen("[anon]"));
+		strncpy(mi->name, "[anon]", strlen("[anon]")+1);
 	else
 		strncpy(mi->name, line + 49, len);
 
