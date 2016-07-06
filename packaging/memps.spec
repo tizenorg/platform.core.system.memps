@@ -1,6 +1,6 @@
 Name:       memps
 Summary:    Tool to summarize memory usage of processes, tmpfs and graphics memory usage
-Version:    0.1.8
+Version:    0.1.9
 Release:    0
 Group:      System/Utilities
 License:    Apache-2.0
