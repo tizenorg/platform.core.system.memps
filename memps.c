@@ -1230,26 +1230,39 @@ void check_kernel_version(void)
 	ret = uname(&buf);
 
 	if (!ret) {
-		if (buf.release[0] == '3') {
-			char *pch;
-			char str[3];
-			int sub_version;
-			pch = strstr(buf.release, ".");
-			strncpy(str, pch+1, 2);
-			sub_version = atoi(str);
+		char *pch;
+		char str[3];
+		int sub_version;
+		pch = strstr(buf.release, ".");
+		strncpy(str, pch+1, 2);
+		sub_version = atoi(str);
 
-			if (sub_version >= 10)
-				ignore_smaps_field = 8; /* Referenced, Anonymous, AnonHugePages,
-						   Swap, KernelPageSize, MMUPageSize,
-						   Locked, VmFlags */
-
+		if (buf.release[0] >= '4') {
+			if (sub_version >= 4)
+				ignore_smaps_field = 11;
+				/* Referenced, Anonymous, AnonHugePages, Shared_Hugetlb,
+				 * Private_Hugetlb, Swap, SwapPss, KernelPageSize,
+				 * MMUPageSize, Locked, VmFlags */
+			else if (sub_version == 3)
+				ignore_smaps_field = 9;
+				/* Referenced, Anonymous, AnonHugePages, Swap, SwapPss,
+				 * KernelPageSize, MMUPageSize,	Locked, VmFlags */
 			else
-				ignore_smaps_field = 7; /* Referenced, Anonymous, AnonHugePages,
-						   Swap, KernelPageSize, MMUPageSize,
-						   Locked */
+				ignore_smaps_field = 8;
+				/* Referenced, Anonymous, AnonHugePages, Swap,
+				 * KernelPageSize, MMUPageSize,	Locked, VmFlags */
+		} else if (buf.release[0] == '3') {
+			if (sub_version >= 10)
+				ignore_smaps_field = 8;
+				/* Referenced, Anonymous, AnonHugePages, Swap,
+				 * KernelPageSize, MMUPageSize,	Locked, VmFlags */
+			else
+				ignore_smaps_field = 7;
+				/* Referenced, Anonymous, AnonHugePages, Swap,
+				 * KernelPageSize, MMUPageSize,	Locked */
 		} else {
-			ignore_smaps_field = 4; /* Referenced, Swap, KernelPageSize,
-						   MMUPageSize */
+			ignore_smaps_field = 4;
+				/* Referenced, Swap, KernelPageSize, MMUPageSize */
 		}
 	}
 }
